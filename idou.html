@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>移動君</title>
+<style>
+:root{--bg:#f5f7fa;--card:#fff;--ink:#222;--sub:#667;--line:#d8dee6;--acc:#2563eb;--route:#e11d48}
+*{box-sizing:border-box}
+body{margin:0;font-family:"Meiryo","Yu Gothic",sans-serif;background:var(--bg);color:var(--ink)}
+header{background:var(--acc);color:#fff;padding:14px 24px;font-size:22px;font-weight:bold}
+header small{font-weight:normal;font-size:13px;margin-left:12px;opacity:.85}
+main{display:grid;grid-template-columns:250px 1fr 300px;gap:16px;padding:16px;max-width:1500px;margin:auto}
+@media(max-width:1100px){main{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px}
+h2{margin:0 0 10px;font-size:16px;color:var(--sub)}
+.cmd{display:block;width:100%;text-align:left;padding:12px;margin-bottom:8px;border:1px solid var(--line);border-radius:8px;background:#fff;cursor:pointer;font-size:17px}
+.cmd.active{border-color:var(--acc);background:#eaf1ff;font-weight:bold}
+select{font-size:16px;padding:8px;width:100%;border:1px solid var(--line);border-radius:6px}
+.mode{display:block;margin:6px 0;font-size:15px;cursor:pointer}
+.hint{color:var(--sub);font-size:13px;line-height:1.6}
+.dest{background:#fff1f2;border-left:4px solid var(--route);padding:10px 12px;border-radius:4px;line-height:1.7;margin-bottom:12px}
+.dest b{font-size:18px}
+.summary{font-size:15px;line-height:1.8;margin-bottom:10px}
+.rooms span{display:inline-block;background:#eaf1ff;border-radius:12px;padding:2px 10px;margin:2px 0}
+.steps{counter-reset:s;padding:0;list-style:none;margin:0}
+.steps li{counter-increment:s;position:relative;padding:6px 8px 6px 38px;margin-bottom:6px;background:#f8fafc;border-left:4px solid var(--route);border-radius:4px}
+.steps li::before{content:counter(s);position:absolute;left:8px;top:6px;background:var(--route);color:#fff;width:22px;height:22px;border-radius:50%;text-align:center;font-size:13px;line-height:22px}
+#map{width:100%;height:auto;background:#fff;border:1px solid var(--line);border-radius:8px;cursor:pointer}
+.legend{font-size:13px;color:var(--sub);margin-top:8px}
+.legend i{display:inline-block;width:12px;height:12px;border-radius:50%;vertical-align:-1px;margin:0 4px 0 12px}
+</style>
+</head>
+<body>
+<header>移動君<small>試作版：指示された動作から、所定位置までの経路を作成（ロボは動かしません）</small></header>
+<main>
+  <section class="card">
+    <h2>① 動作の命令</h2>
+    <div id="cmds"></div>
+    <h2 style="margin-top:18px">② 現在の位置</h2>
+    <select id="pos"></select>
+    <h2 style="margin-top:18px">③ マップをクリックしたとき</h2>
+    <label class="mode"><input type="radio" name="mode" value="robot" checked> 現在位置を変更</label>
+    <label class="mode"><input type="radio" name="mode" value="target"> 選択中の命令の所定位置を変更</label>
+    <p class="hint" id="modeHint">床をクリックすると、ロボの現在位置が変わります。</p>
+    <button class="cmd" id="reset" style="font-size:14px;padding:8px;text-align:center">所定位置を初期値に戻す</button>
+  </section>
+
+  <section class="card">
+    <h2>家の間取り</h2>
+    <svg id="map"></svg>
+    <div class="legend"><i style="background:#2563eb"></i>現在位置<i style="background:#e11d48"></i>目標（物の場所）<i style="background:#f59e0b"></i>ロボの立ち位置</div>
+  </section>
+
+  <section class="card">
+    <h2>④ 経路</h2>
+    <div id="out" class="hint">動作の命令を選んでください。</div>
+  </section>
+</main>
+
+<script>
+// ===== 間取りデータ（1マス＝約0.5m） =====
+const W=24, H=16, CELL=30, M_PER_CELL=0.5;
+const ROOMS=[
+ {name:"子供部屋",x:1,y:1,w:7,h:5,color:"#fef3c7"},
+ {name:"寝室",x:9,y:1,w:7,h:5,color:"#e0e7ff"},
+ {name:"洗面所",x:17,y:1,w:6,h:5,color:"#cffafe"},
+ {name:"廊下",x:1,y:7,w:22,h:2,color:"#f1f5f9"},
+ {name:"玄関",x:1,y:10,w:5,h:5,color:"#e7e5e4"},
+ {name:"リビング",x:7,y:10,w:9,h:5,color:"#dcfce7"},
+ {name:"キッチン",x:17,y:10,w:6,h:5,color:"#fce7f3"}
+];
+// ドア（壁に開いた通路）
+const DOORS=[[4,6],[12,6],[19,6],[3,9],[11,9],[19,9],[6,12],[16,12]];
+// 家具（通れない）
+const FURN=[
+ {name:"本棚",x:1,y:1,w:1,h:3},{name:"学習机",x:5,y:1,w:3,h:1},
+ {name:"ベッド",x:10,y:1,w:3,h:3},{name:"洗濯機",x:18,y:1,w:2,h:1},
+ {name:"靴箱",x:1,y:10,w:1,h:3},{name:"テーブル",x:9,y:11,w:4,h:2},
+ {name:"ソファ",x:13,y:14,w:2,h:1},{name:"調理台",x:17,y:10,w:5,h:1}
+];
+// 物の置き場所：item=物の場所(家具セル) / stand=ロボが立つマス
+const COMMANDS=[
+ {id:"fold",label:"服たたみ",icon:"👕",object:"洗濯物",room:"寝室",furn:"ベッド",item:[11,2],stand:[11,4]},
+ {id:"homework",label:"宿題丸付け",icon:"📝",object:"宿題のノート",room:"リビング",furn:"テーブル",item:[10,11],stand:[10,13]},
+ {id:"pencil",label:"鉛筆をとる",icon:"✏️",object:"鉛筆（筆立て）",room:"子供部屋",furn:"学習机",item:[6,1],stand:[6,2]},
+ {id:"eraser",label:"消しゴムをとる",icon:"🧽",object:"消しゴム（本棚の引き出し）",room:"子供部屋",furn:"本棚",item:[1,2],stand:[2,2]}
+];
+// 現在位置の候補
+const SPOTS=[
+ {label:"玄関",pos:[3,12]},{label:"廊下（中央）",pos:[11,7]},{label:"リビング",pos:[8,14]},
+ {label:"キッチン",pos:[19,12]},{label:"洗面所",pos:[20,3]},{label:"子供部屋",pos:[3,5]},{label:"寝室",pos:[14,4]}
+];
+
+// ===== グリッド生成 =====
+const grid=[], roomAt=[];
+for(let y=0;y<H;y++){grid.push(Array(W).fill(1));roomAt.push(Array(W).fill(null));}
+ROOMS.forEach(r=>{for(let y=r.y;y<r.y+r.h;y++)for(let x=r.x;x<r.x+r.w;x++){grid[y][x]=0;roomAt[y][x]=r.name;}});
+DOORS.forEach(([x,y])=>grid[y][x]=0);
+FURN.forEach(f=>{for(let y=f.y;y<f.y+f.h;y++)for(let x=f.x;x<f.x+f.w;x++)grid[y][x]=2;});
+const free=(x,y)=>x>=0&&y>=0&&x<W&&y<H&&grid[y][x]===0;
+
+// ===== 経路探索（幅優先探索：4方向、最短） =====
+function findPath(s,g){
+  const key=(x,y)=>y*W+x, prev=new Map([[key(...s),null]]), q=[s];
+  while(q.length){
+    const [x,y]=q.shift();
+    if(x===g[0]&&y===g[1]){
+      const path=[]; let k=key(x,y);
+      while(k!==null){path.push([k%W,Math.floor(k/W)]);k=prev.get(k);}
+      return path.reverse();
+    }
+    for(const [dx,dy] of [[0,-1],[1,0],[0,1],[-1,0]]){
+      const nx=x+dx,ny=y+dy;
+      if(free(nx,ny)&&!prev.has(key(nx,ny))){prev.set(key(nx,ny),key(x,y));q.push([nx,ny]);}
+    }
+  }
+  return null;
+}
+const DIRS={"0,-1":"上（奥）","1,0":"右","0,1":"下（手前）","-1,0":"左"};
+const ARROW={"0,-1":"↑","1,0":"→","0,1":"↓","-1,0":"←"};
+function toSteps(path){
+  const steps=[];
+  for(let i=1;i<path.length;i++){
+    const d=(path[i][0]-path[i-1][0])+","+(path[i][1]-path[i-1][1]);
+    const last=steps[steps.length-1];
+    if(last&&last.d===d)last.n++; else steps.push({d,n:1});
+  }
+  return steps;
+}
+
+// ===== 状態 =====
+const $=id=>document.getElementById(id);
+const state={cmd:null,pos:SPOTS[0].pos.slice(),mode:"robot"};
+const DEFAULTS=JSON.parse(JSON.stringify(COMMANDS.map(c=>({id:c.id,item:c.item,stand:c.stand}))));
+const furnAt=(x,y)=>{const f=FURN.find(f=>x>=f.x&&x<f.x+f.w&&y>=f.y&&y<f.y+f.h);return f?f.name:"床の上";};
+const STORE="idou-targets";
+function saveTargets(){try{localStorage.setItem(STORE,JSON.stringify(COMMANDS.map(c=>({id:c.id,item:c.item,stand:c.stand}))));}catch(e){}}
+function loadTargets(){try{
+  (JSON.parse(localStorage.getItem(STORE))||[]).forEach(t=>{const c=COMMANDS.find(c=>c.id===t.id);
+    if(c&&free(...t.stand)){c.item=t.item;c.stand=t.stand;}});
+}catch(e){}}
+loadTargets();
+// 所定位置の変更：家具をクリック→その家具が物の場所、隣の床がロボの立ち位置。床をクリック→そこ自体
+function setTarget(c,x,y){
+  if(free(x,y)){c.item=[x,y];c.stand=[x,y];return true;}
+  if(grid[y][x]!==2)return false;
+  let best=null;
+  for(const [dx,dy] of [[0,1],[0,-1],[1,0],[-1,0]]){
+    const nx=x+dx,ny=y+dy;
+    if(!free(nx,ny))continue;
+    const p=findPath(state.pos,[nx,ny]);
+    if(p&&(!best||p.length<best.len))best={len:p.length,s:[nx,ny]};
+  }
+  if(!best)return false;
+  c.item=[x,y];c.stand=best.s;return true;
+}
+
+// ===== 描画 =====
+function drawMap(path){
+  const c=COMMANDS.find(c=>c.id===state.cmd);
+  let s=`viewBox="0 0 ${W*CELL} ${H*CELL}"`, b="";
+  b+=`<rect width="${W*CELL}" height="${H*CELL}" fill="#475569"/>`;
+  ROOMS.forEach(r=>b+=`<rect x="${r.x*CELL}" y="${r.y*CELL}" width="${r.w*CELL}" height="${r.h*CELL}" fill="${r.color}"/>`);
+  DOORS.forEach(([x,y])=>b+=`<rect x="${x*CELL}" y="${y*CELL}" width="${CELL}" height="${CELL}" fill="#fff"/>`);
+  // 格子線
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++)if(grid[y][x]===0)
+    b+=`<rect x="${x*CELL}" y="${y*CELL}" width="${CELL}" height="${CELL}" fill="none" stroke="#0000000f"/>`;
+  FURN.forEach(f=>{
+    b+=`<rect x="${f.x*CELL+2}" y="${f.y*CELL+2}" width="${f.w*CELL-4}" height="${f.h*CELL-4}" rx="4" fill="#cbd5e1" stroke="#94a3b8"/>`;
+    const vertical=f.h>f.w*1.5&&f.w===1;
+    b+=`<text x="${(f.x+f.w/2)*CELL}" y="${(f.y+f.h/2)*CELL}" font-size="11" fill="#334155" text-anchor="middle" dominant-baseline="middle"${vertical?` transform="rotate(-90 ${(f.x+f.w/2)*CELL} ${(f.y+f.h/2)*CELL})"`:""}>${f.name}</text>`;
+  });
+  // 部屋名
+  ROOMS.forEach(r=>{
+    const lx=(r.x+0.3)*CELL, ly=(r.y+r.h-0.45)*CELL;
+    if(r.name==="廊下")b+=`<text x="${(r.x+r.w/2)*CELL}" y="${(r.y+1)*CELL}" font-size="13" fill="#64748b" text-anchor="middle" dominant-baseline="middle">廊下</text>`;
+    else b+=`<text x="${(r.x+r.w-0.3)*CELL}" y="${ly}" font-size="13" font-weight="bold" fill="#475569" text-anchor="end">${r.name}</text>`;
+  });
+  // 経路
+  if(path){
+    b+=`<polyline points="${path.map(([x,y])=>`${(x+.5)*CELL},${(y+.5)*CELL}`).join(" ")}" fill="none" stroke="#e11d48" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="1 9"/>`;
+    b+=`<polyline points="${path.map(([x,y])=>`${(x+.5)*CELL},${(y+.5)*CELL}`).join(" ")}" fill="none" stroke="#e11d48" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity=".75"/>`;
+  }
+  if(c){
+    b+=`<circle cx="${(c.item[0]+.5)*CELL}" cy="${(c.item[1]+.5)*CELL}" r="11" fill="#e11d48" stroke="#fff" stroke-width="2"/>`;
+    b+=`<text x="${(c.item[0]+.5)*CELL}" y="${(c.item[1]+.5)*CELL+1}" font-size="13" text-anchor="middle" dominant-baseline="middle">${c.icon}</text>`;
+    b+=`<rect x="${c.stand[0]*CELL+7}" y="${c.stand[1]*CELL+7}" width="${CELL-14}" height="${CELL-14}" rx="3" fill="#f59e0b" stroke="#fff" stroke-width="2"/>`;
+  }
+  b+=`<circle cx="${(state.pos[0]+.5)*CELL}" cy="${(state.pos[1]+.5)*CELL}" r="12" fill="#2563eb" stroke="#fff" stroke-width="3"/>`;
+  b+=`<text x="${(state.pos[0]+.5)*CELL}" y="${(state.pos[1]+.5)*CELL+1}" font-size="14" text-anchor="middle" dominant-baseline="middle">🤖</text>`;
+  const m=$("map"); m.setAttribute("viewBox",`0 0 ${W*CELL} ${H*CELL}`); m.innerHTML=b;
+}
+
+function update(){
+  const c=COMMANDS.find(c=>c.id===state.cmd);
+  document.querySelectorAll(".cmd").forEach(el=>el.classList.toggle("active",el.dataset.id===state.cmd));
+  if(!c){drawMap(null);return;}
+  const path=findPath(state.pos,c.stand);
+  drawMap(path);
+  const here=roomAt[state.pos[1]][state.pos[0]];
+  let html=`<div class="dest">命令：<b>${c.icon} ${c.label}</b><br>
+    ${c.object} は <b>${roomAt[c.stand[1]][c.stand[0]]||"ドア付近"}</b> の「${furnAt(...c.item)}」にあります。</div>`;
+  if(!path){$("out").className="";$("out").innerHTML=html+"<p>経路が見つかりません。</p>";return;}
+  const steps=toSteps(path), n=path.length-1;
+  const seq=[]; path.forEach(([x,y])=>{const r=roomAt[y][x]; if(r&&seq[seq.length-1]!==r)seq.push(r);});
+  html+=`<div class="summary">現在位置：<b>${here||"ドア付近"}</b><br>
+    距離：<b>${n}マス</b>（約${(n*M_PER_CELL).toFixed(1)}m）／曲がる回数：${Math.max(steps.length-1,0)}回<br>
+    通る部屋：<span class="rooms">${seq.join("</span> → <span>")}</span></div>`;
+  if(n===0)html+=`<p>すでに目標位置にいます。</p>`;
+  else html+=`<ol class="steps">${steps.map(s=>`<li>${ARROW[s.d]} ${DIRS[s.d]}へ <b>${s.n}</b>マス進む</li>`).join("")}</ol>`;
+  html+=`<p class="hint" style="margin-top:10px">到着後、${c.object}を対象にアームの動作へ移ります（アーム操作は人が行います）。</p>`;
+  $("out").className=""; $("out").innerHTML=html;
+}
+
+// ===== 初期化・操作 =====
+COMMANDS.forEach(c=>{
+  const b=document.createElement("button");
+  b.className="cmd"; b.dataset.id=c.id; b.textContent=c.icon+"  "+c.label;
+  b.onclick=()=>{state.cmd=c.id;update();};
+  $("cmds").appendChild(b);
+});
+SPOTS.forEach((s,i)=>{const o=document.createElement("option");o.value=i;o.textContent=s.label;$("pos").appendChild(o);});
+$("pos").onchange=e=>{state.pos=SPOTS[e.target.value].pos.slice();update();};
+$("map").addEventListener("click",e=>{
+  const r=$("map").getBoundingClientRect();
+  const x=Math.floor((e.clientX-r.left)/r.width*W), y=Math.floor((e.clientY-r.top)/r.height*H);
+  if(state.mode==="target"){
+    const c=COMMANDS.find(c=>c.id===state.cmd);
+    if(c&&setTarget(c,x,y)){saveTargets();update();}
+    return;
+  }
+  if(free(x,y)){
+    state.pos=[x,y];
+    const i=SPOTS.findIndex(s=>s.pos[0]===x&&s.pos[1]===y);
+    $("pos").selectedIndex=i; // 候補外なら未選択
+    update();
+  }
+});
+document.querySelectorAll("input[name=mode]").forEach(r=>r.onchange=()=>{
+  state.mode=r.value;
+  $("modeHint").textContent=r.value==="robot"
+    ?"床をクリックすると、ロボの現在位置が変わります。"
+    :"先に命令を選び、マップ上の家具（物の場所）か床をクリックしてください。家具の場合は隣の床がロボの立ち位置になります。";
+});
+$("reset").onclick=()=>{
+  DEFAULTS.forEach(d=>{const c=COMMANDS.find(c=>c.id===d.id);c.item=d.item.slice();c.stand=d.stand.slice();});
+  saveTargets();update();
+};
+update();
+</script>
+</body>
+</html>
