@@ -9,14 +9,14 @@ $mime = @{
 $listener = New-Object System.Net.HttpListener
 $listener.Prefixes.Add("http://localhost:$Port/")
 try { $listener.Start() } catch { Write-Host "Cannot start server on port $Port : $($_.Exception.Message)"; pause; exit 1 }
-$url = "http://localhost:$Port/idou.html"
+$url = "http://localhost:$Port/"
 Write-Host "Server running: $url   (close this window to stop)"
 if (-not $env:NO_BROWSER) { Start-Process $url }
 while ($listener.IsListening) {
   $ctx = $listener.GetContext()
   try {
     $rel = [Uri]::UnescapeDataString($ctx.Request.Url.AbsolutePath).TrimStart('/')
-    if ($rel -eq '') { $rel = 'idou.html' }
+    if ($rel -eq '') { $rel = 'index.html' }
     $full = [IO.Path]::GetFullPath((Join-Path $root $rel))
     if ($full.StartsWith($root) -and (Test-Path -LiteralPath $full -PathType Leaf)) {
       $bytes = [IO.File]::ReadAllBytes($full)
