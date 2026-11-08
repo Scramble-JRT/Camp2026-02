@@ -34,6 +34,10 @@ input[type=text]{font-size:18px;padding:8px 10px;width:140px;border:1px solid va
 .hint{color:var(--sub);font-size:14px}
 #preview{max-width:100%;border:1px solid var(--line);border-radius:6px;margin-top:8px}
 .hidden{display:none}
+.seg{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px}
+.seg button{flex:1 1 45%;padding:8px 4px;font-size:14px;border:1px solid var(--acc);background:#fff;color:var(--acc);border-radius:6px;cursor:pointer}
+.seg button.on{background:var(--acc);color:#fff}
+.seg button.fill{background:#fff7e6;border-color:#d97706;color:#b45309;font-weight:bold}
 .fig{width:100%;max-width:380px;display:block;margin:0 0 12px;background:#fff;border:1px solid var(--line);border-radius:8px}
 .fig .ln{stroke:#333;stroke-width:2;fill:none}
 .fig .ln.dash{stroke-dasharray:5 4;stroke-width:1.6;stroke:#c2410c}
@@ -53,10 +57,18 @@ input[type=text]{font-size:18px;padding:8px 10px;width:140px;border:1px solid va
   <section class="card">
     <h2>問題を選ぶ</h2>
     <div class="qlist" id="qlist"></div>
-    <h2 style="margin-top:18px">問題・解答ページの画像</h2>
-    <input type="file" id="file" accept="image/*">
-    <img id="preview" class="hidden" alt="読み込んだ画像">
-    <p class="hint">※ 画像の自動判読は今後の対応です。今回は画像から書き起こした問題データを使用しています。</p>
+    <h2 style="margin-top:18px">回答用紙の読み取り</h2>
+    <div class="seg" id="patSeg">
+      <button data-p="パターンA">パターンA</button><button data-p="パターンB">パターンB</button><button data-p="パターンC">パターンC</button><button id="fillBtn" class="fill">回答欄へ記入</button>
+    </div>
+    <div id="patStat" class="hint" style="margin-bottom:10px">パターンを選んで「回答欄へ記入」を押すと、そのパターンの回答が入ります。</div>
+    <button class="btn" id="camBtn" style="margin-top:0">📷 カメラを起動</button>
+    <select id="camSel" class="hidden" style="margin-top:8px;width:100%;padding:6px"></select>
+    <video id="cam" class="hidden" autoplay playsinline muted style="width:100%;margin-top:8px;border-radius:6px;border:1px solid var(--line)"></video>
+    <button class="btn hidden" id="pickBtn">選択（今の画像を判定）</button>
+    <div id="camStat" class="hint" style="margin-top:6px"></div>
+    <img id="preview" class="hidden" alt="判定された回答用紙">
+    <p class="hint">「選択」を押した瞬間の画像をAIが判定し、パターンA・B・Cのどれかなら、その回答を各問題に入力します（白紙は無視）。</p>
   </section>
 
   <section class="card">
@@ -75,6 +87,8 @@ input[type=text]{font-size:18px;padding:8px 10px;width:140px;border:1px solid va
   </section>
 </main>
 
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8/dist/teachablemachine-image.min.js"></script>
 <script>
 // ===== 図形描画ヘルパー（SVG） =====
 const D2R = Math.PI/180;
@@ -203,7 +217,13 @@ const QUESTIONS = [
 ];
 // ※ 2(3) の解説は画像で途中までのため、続きは解き方に沿って補完（答えは 55°）
 
-const state = {cur:0, marks:{}};
+const state = {cur:0, marks:{}, answers:{}};
+// 回答用紙パターンごとの回答（画像から書き起こし）
+const PATTERN_ANS = {
+ "パターンA":{"1-1":["65"],"1-2":["42"],"1-3":["35","50"],"2-1":["20"],"2-2":["65"],"2-3":["54"]},
+ "パターンB":{"1-1":["64"],"1-2":["20"],"1-3":["35","60"],"2-1":["25"],"2-2":["45"],"2-3":["93"]},
+ "パターンC":{"1-1":["65"],"1-2":["40"],"1-3":["35","60"],"2-1":["20"],"2-2":["65"],"2-3":["55"]}
+};
 const $ = id => document.getElementById(id);
 
 // 全角→半角、単位・空白除去して比較
@@ -230,6 +250,12 @@ function renderQuestion(){
   $("fig").innerHTML = FIGS[q.id] ? FIGS[q.id](false) : "";
   $("inputs").innerHTML = q.fields.map((f,i)=>
     `<div class="row"><label style="margin:0;width:60px">${f.label}＝</label><input type="text" id="in${i}" autocomplete="off"> ${f.unit}</div>`).join("");
+  const saved = state.answers[q.id] || [];
+  q.fields.forEach((f,i)=>{
+    const el = $("in"+i);
+    el.value = saved[i] || "";
+    el.oninput = ()=>{ (state.answers[q.id] = state.answers[q.id] || [])[i] = el.value; };
+  });
   $("result").className = "hint";
   $("result").textContent = "回答を入力して「丸付けする」を押してください。";
   $("exp").innerHTML = "";
@@ -257,9 +283,77 @@ $("check").onclick = ()=>{
 
 $("showExp").onclick = ()=>{ $("exp").innerHTML = explanation(QUESTIONS[state.cur]); };
 
-$("file").onchange = e=>{
-  const f = e.target.files[0]; if(!f) return;
-  const img = $("preview"); img.src = URL.createObjectURL(f); img.classList.remove("hidden");
+// ===== カメラ + Teachable Machine 画像モデル =====
+const IMG_MODEL = "https://teachablemachine.withgoogle.com/models/MCFYQpkbO/";
+let imgModel = null, camStream = null;
+
+async function startCam(deviceId){
+  if(camStream) camStream.getTracks().forEach(t=>t.stop());
+  camStream = await navigator.mediaDevices.getUserMedia({video: deviceId ? {deviceId:{exact:deviceId}} : true});
+  $("cam").srcObject = camStream;
+}
+$("camBtn").onclick = async ()=>{
+  const st = $("camStat");
+  if(!navigator.mediaDevices || !window.isSecureContext){
+    st.innerHTML = "このページはカメラを使えない開き方です（"+location.protocol+"）。<b>起動.bat</b> をダブルクリックして http://localhost:8000/idou.html から開いてください。";
+    return;
+  }
+  try{
+    st.textContent = "カメラを準備中…（許可を求められたら「許可」）";
+    await startCam();                                   // ここで許可ポップアップが出る
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==="videoinput");
+    const cur = camStream.getVideoTracks()[0].getSettings().deviceId;
+    $("camSel").innerHTML = devs.map((d,i)=>`<option value="${d.deviceId}" ${d.deviceId===cur?"selected":""}>${d.label||("カメラ"+(i+1))}</option>`).join("");
+    $("camSel").classList.remove("hidden");
+    $("cam").classList.remove("hidden"); $("pickBtn").classList.remove("hidden");
+    $("camBtn").classList.add("hidden");
+    st.textContent = "モデルを読み込み中…";
+    if(typeof tmImage === "undefined") throw new Error("判定ライブラリを読み込めません（ネット接続を確認）");
+    if(!imgModel) imgModel = await tmImage.load(IMG_MODEL+"model.json", IMG_MODEL+"metadata.json");
+    st.textContent = "用紙をカメラに写して「選択」を押してください。";
+  }catch(e){
+    st.textContent = "カメラを開始できません："+(e.name||"")+" "+(e.message||e)+
+      "（ブラウザのアドレスバー左の鍵/カメラ設定で、カメラを「許可」にしてください）";
+  }
+};
+$("camSel").onchange = async e=>{ try{ await startCam(e.target.value); }catch(err){ $("camStat").textContent="切替失敗："+err.message; } };
+
+// ===== パターン選択（画像表示）と回答欄への記入 =====
+let curPattern = null;
+function showPattern(k){
+  curPattern = k;
+  const img = $("preview"); img.src = k+".jpg"; img.classList.remove("hidden");
+  document.querySelectorAll("#patSeg button[data-p]").forEach(b=>b.classList.toggle("on",b.dataset.p===k));
+  $("patStat").textContent = k+" の画像を表示中。「回答欄へ記入」で回答を入力します。";
+}
+function fillAnswers(k){
+  state.answers = JSON.parse(JSON.stringify(PATTERN_ANS[k]));
+  state.marks = {};
+  renderQuestion();
+}
+document.querySelectorAll("#patSeg button[data-p]").forEach(b=>b.onclick=()=>showPattern(b.dataset.p));
+$("fillBtn").onclick = ()=>{
+  if(!curPattern){ $("patStat").textContent = "先にパターンA・B・Cのいずれかを選んでください。"; return; }
+  fillAnswers(curPattern);
+  $("patStat").textContent = curPattern+" の回答を各問題に記入しました。";
+};
+
+$("pickBtn").onclick = async ()=>{
+  const v = $("cam"), st = $("camStat");
+  if(!v.videoWidth){ st.textContent = "カメラ映像がまだ準備できていません。"; return; }
+  const cv = document.createElement("canvas"); cv.width = v.videoWidth; cv.height = v.videoHeight;
+  cv.getContext("2d").drawImage(v,0,0);          // 押した瞬間のフレーム
+  const pred = await imgModel.predict(cv);
+  pred.sort((a,b)=>b.probability-a.probability);
+  const top = pred[0], pct = Math.round(top.probability*100);
+  const detail = pred.map(p=>p.className+" "+Math.round(p.probability*100)+"%").join(" / ");
+  if(!PATTERN_ANS[top.className]){
+    st.textContent = `判定：${top.className}（${pct}%）→ 回答は入力しません。 [${detail}]`;
+    return;
+  }
+  showPattern(top.className);
+  fillAnswers(top.className);
+  st.textContent = `判定：${top.className}（${pct}%）→ 回答を各問題に入力しました。 [${detail}]`;
 };
 
 renderQuestion();

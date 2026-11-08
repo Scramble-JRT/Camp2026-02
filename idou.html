@@ -17,6 +17,17 @@ h2{margin:0 0 10px;font-size:16px;color:var(--sub)}
 .cmd{display:block;width:100%;text-align:left;padding:12px;margin-bottom:8px;border:1px solid var(--line);border-radius:8px;background:#fff;cursor:pointer;font-size:17px}
 .cmd.active{border-color:var(--acc);background:#eaf1ff;font-weight:bold}
 select{font-size:16px;padding:8px;width:100%;border:1px solid var(--line);border-radius:6px}
+.seg{display:flex;margin-bottom:10px}
+.seg button{flex:1;padding:9px;font-size:15px;border:1px solid var(--acc);background:#fff;color:var(--acc);cursor:pointer}
+.seg button:first-child{border-radius:8px 0 0 8px}.seg button:last-child{border-radius:0 8px 8px 0;border-left:0}
+.seg button.on{background:var(--acc);color:#fff}
+.hidden{display:none}
+.cmd:disabled{opacity:.5;cursor:not-allowed}
+.bar{display:flex;align-items:center;gap:6px;font-size:13px;margin:3px 0}
+.bar span{width:100px}.bar div{flex:1;height:10px;background:#e5e7eb;border-radius:5px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:var(--acc)}
+.arrive{background:#dcfce7;border-left:4px solid #16a34a;padding:10px 12px;border-radius:4px;margin-bottom:12px;font-weight:bold;color:#166534}
+.moving{background:#fef9c3;border-left:4px solid #ca8a04;padding:10px 12px;border-radius:4px;margin-bottom:12px;font-weight:bold}
 .mode{display:block;margin:6px 0;font-size:15px;cursor:pointer}
 .hint{color:var(--sub);font-size:13px;line-height:1.6}
 .dest{background:#fff1f2;border-left:4px solid var(--route);padding:10px 12px;border-radius:4px;line-height:1.7;margin-bottom:12px}
@@ -35,7 +46,15 @@ select{font-size:16px;padding:8px;width:100%;border:1px solid var(--line);border
 <header>移動君<small>試作版：指示された動作から、所定位置までの経路を作成（ロボは動かしません）</small></header>
 <main>
   <section class="card">
-    <h2>① 動作の命令</h2>
+    <h2>命令の指定方法</h2>
+    <div class="seg"><button id="m-btn" class="on">ボタン選択</button><button id="m-voice">音声入力</button></div>
+    <div id="voice" class="hidden">
+      <button class="cmd" id="micToggle" style="text-align:center">🎤 聞き取り開始</button>
+      <div id="vstat" class="hint">マイクの使用を許可してください。</div>
+      <div id="bars"></div>
+      <p class="hint">認識できる言葉：「服たたんで」「丸付けして」「鉛筆取って」「消しゴム取って」。</p>
+    </div>
+    <h2 style="margin-top:18px">① 動作の命令</h2>
     <div id="cmds"></div>
     <h2 style="margin-top:18px">② 現在の位置</h2>
     <select id="pos"></select>
@@ -55,9 +74,29 @@ select{font-size:16px;padding:8px;width:100%;border:1px solid var(--line);border
   <section class="card">
     <h2>④ 経路</h2>
     <div id="out" class="hint">動作の命令を選んでください。</div>
+    <div id="goalBox" style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+    <h2>ゴールの判定方法</h2>
+    <div class="seg"><button id="g-sim" class="on">シミュレーション</button><button id="g-cam">カメラ</button></div>
+    <div id="camPanel" class="hidden">
+      <button class="cmd" id="gcamBtn" style="text-align:center">📷 カメラを起動</button>
+      <select id="gcamSel" class="hidden" style="margin-bottom:8px"></select>
+      <video id="gcam" class="hidden" autoplay playsinline muted style="width:100%;border-radius:6px;border:1px solid var(--line)"></video>
+      <button class="cmd hidden" id="gpick" style="text-align:center;margin-top:8px;background:var(--acc);color:#fff">選択（今の画像でゴール判定）</button>
+      <div id="gstat" class="hint"></div>
+      <div id="gbars"></div>
+      <p class="hint">「服・鉛筆・消しゴム・宿題」を写し、選んだ命令のものと一致すればゴールです。</p>
+    </div>
+    </div>
   </section>
 </main>
+<section id="markWrap" class="card hidden" style="max-width:1468px;margin:0 auto 24px">
+  <h2>丸付け君（移動完了で自動起動）<button id="markClose" class="cmd" style="display:inline-block;width:auto;margin:0 0 0 12px;padding:4px 12px;font-size:13px">閉じる</button></h2>
+  <iframe id="markFrame" title="丸付け君" allow="camera" style="width:100%;height:780px;border:1px solid var(--line);border-radius:8px"></iframe>
+</section>
 
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/speech-commands@0.4.0/dist/speech-commands.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8/dist/teachablemachine-image.min.js"></script>
 <script>
 // ===== 間取りデータ（1マス＝約0.5m） =====
 const W=24, H=16, CELL=30, M_PER_CELL=0.5;
@@ -131,7 +170,7 @@ function toSteps(path){
 
 // ===== 状態 =====
 const $=id=>document.getElementById(id);
-const state={cmd:null,pos:SPOTS[0].pos.slice(),mode:"robot"};
+const state={cmd:null,pos:SPOTS[0].pos.slice(),mode:"robot",goalMode:"sim",goal:null};
 const DEFAULTS=JSON.parse(JSON.stringify(COMMANDS.map(c=>({id:c.id,item:c.item,stand:c.stand}))));
 const furnAt=(x,y)=>{const f=FURN.find(f=>x>=f.x&&x<f.x+f.w&&y>=f.y&&y<f.y+f.h);return f?f.name:"床の上";};
 const STORE="idou-targets";
@@ -192,16 +231,66 @@ function drawMap(path){
   const m=$("map"); m.setAttribute("viewBox",`0 0 ${W*CELL} ${H*CELL}`); m.innerHTML=b;
 }
 
-function update(){
+// ===== 移動シミュレーション =====
+const SIM_MS=250;
+let sim=null;
+function stopSim(){if(sim){clearInterval(sim.timer);sim=null;}}
+function startSim(){
+  const c=COMMANDS.find(c=>c.id===state.cmd); if(!c)return;
+  stopSim();
+  const path=findPath(state.pos,c.stand); if(!path)return;
+  let i=0;
+  const finish=()=>{
+    stopSim(); state.pos=c.stand.slice(); update();
+    if(c.id==="homework"&&state.goalMode==="sim")openMarker();
+  };
+  if(path.length===1){finish();return;}
+  sim={timer:setInterval(()=>{
+    i++; state.pos=path[i].slice(); drawMap(path);
+    $("out").querySelector(".moving")&&($("out").querySelector(".moving b").textContent=`${i}/${path.length-1}マス`);
+    if(i>=path.length-1)finish();
+  },SIM_MS)};
+  update(true,path);
+}
+let markOpened=false, markVisible=false;
+function openMarker(){
+  markOpened=true; markVisible=true;
+  $("markWrap").classList.remove("hidden");
+  $("markFrame").src="index.html";
+  $("markWrap").scrollIntoView({behavior:"smooth"});
+}
+function closeMarker(){
+  markVisible=false;
+  $("markWrap").classList.add("hidden");$("markFrame").src="about:blank";
+}
+$("markClose").onclick=()=>{closeMarker();markOpened=false;};
+// 丸付け君は「宿題丸付け」の間だけ表示：他の命令で消し、再選択で再表示
+function syncMarker(){
+  if(state.cmd!=="homework"){if(markVisible)closeMarker();}
+  else if(markOpened&&!markVisible)openMarker();
+}
+
+function update(simulating,simPath){
+  if(!simulating)stopSim();
+  syncMarker();
   const c=COMMANDS.find(c=>c.id===state.cmd);
   document.querySelectorAll(".cmd").forEach(el=>el.classList.toggle("active",el.dataset.id===state.cmd));
   if(!c){drawMap(null);return;}
-  const path=findPath(state.pos,c.stand);
+  const path=simulating?simPath:findPath(state.pos,c.stand);
   drawMap(path);
+  const atStand=!simulating&&state.pos[0]===c.stand[0]&&state.pos[1]===c.stand[1];
+  const g=state.goal;
+  const camOk=!!g&&g.cmd===c.id&&g.pos===state.pos.join()&&g.stand===c.stand.join();
+  // シミュレーション判定：立ち位置に着けばゴール／カメラ判定：カメラで目標物を確認できたらゴール
+  const arrived=!simulating&&(state.goalMode==="cam"?camOk:atStand);
   const here=roomAt[state.pos[1]][state.pos[0]];
   let html=`<div class="dest">命令：<b>${c.icon} ${c.label}</b><br>
     ${c.object} は <b>${roomAt[c.stand[1]][c.stand[0]]||"ドア付近"}</b> の「${furnAt(...c.item)}」にあります。</div>`;
   if(!path){$("out").className="";$("out").innerHTML=html+"<p>経路が見つかりません。</p>";return;}
+  if(arrived)html+=`<div class="arrive">✅ 移動完了：目標位置に到着しました（${c.label}の位置）${state.goalMode==="cam"?"<br>カメラでゴールを確認しました":""}</div>`;
+  else if(atStand&&state.goalMode==="cam")html+=`<div class="moving">📷 目標付近に着きました。カメラで目標物を写して「選択」を押すとゴール判定します。</div>`;
+  if(arrived&&c.id==="homework")html+=`<button class="cmd" id="openMark" style="text-align:center">📝 丸付け君を開く</button>`;
+  if(simulating)html+=`<div class="moving">🚶 移動中… <b>0/${path.length-1}マス</b></div>`;
   const steps=toSteps(path), n=path.length-1;
   const seq=[]; path.forEach(([x,y])=>{const r=roomAt[y][x]; if(r&&seq[seq.length-1]!==r)seq.push(r);});
   html+=`<div class="summary">現在位置：<b>${here||"ドア付近"}</b><br>
@@ -209,8 +298,11 @@ function update(){
     通る部屋：<span class="rooms">${seq.join("</span> → <span>")}</span></div>`;
   if(n===0)html+=`<p>すでに目標位置にいます。</p>`;
   else html+=`<ol class="steps">${steps.map(s=>`<li>${ARROW[s.d]} ${DIRS[s.d]}へ <b>${s.n}</b>マス進む</li>`).join("")}</ol>`;
+  if(!simulating&&!atStand)html+=`<button class="cmd" id="simBtn" style="text-align:center;margin-top:12px;background:var(--acc);color:#fff">▶ 移動をシミュレーション</button>`;
   html+=`<p class="hint" style="margin-top:10px">到着後、${c.object}を対象にアームの動作へ移ります（アーム操作は人が行います）。</p>`;
   $("out").className=""; $("out").innerHTML=html;
+  if($("simBtn"))$("simBtn").onclick=startSim;
+  if($("openMark"))$("openMark").onclick=openMarker;
 }
 
 // ===== 初期化・操作 =====
@@ -247,6 +339,122 @@ $("reset").onclick=()=>{
   DEFAULTS.forEach(d=>{const c=COMMANDS.find(c=>c.id===d.id);c.item=d.item.slice();c.stand=d.stand.slice();});
   saveTargets();update();
 };
+// ===== 音声入力（Teachable Machine 音声モデル） =====
+const MODEL_URL="https://teachablemachine.withgoogle.com/models/btBjcXK_K/";
+const VOICE_MAP={"服たたんで":"fold","丸付けして":"homework","鉛筆取って":"pencil","消しゴム取って":"eraser"};
+const THRESHOLD=0.85;
+let recognizer=null, listening=false, lastHit={id:null,t:0};
+
+function setInputMode(voice){
+  $("m-btn").classList.toggle("on",!voice); $("m-voice").classList.toggle("on",voice);
+  $("voice").classList.toggle("hidden",!voice);
+  document.querySelectorAll("#cmds .cmd").forEach(b=>b.disabled=voice&&Object.values(VOICE_MAP).includes(b.dataset.id));
+  if(!voice&&listening)stopListen();
+}
+async function startListen(){
+  const st=$("vstat");
+  if(typeof speechCommands==="undefined"){st.textContent="音声認識ライブラリを読み込めません（ネット接続を確認）。";return;}
+  try{
+    if(!recognizer){
+      st.textContent="モデルを読み込み中…";
+      recognizer=speechCommands.create("BROWSER_FFT",undefined,MODEL_URL+"model.json",MODEL_URL+"metadata.json");
+      await recognizer.ensureModelLoaded();
+      const labels=recognizer.wordLabels();
+      $("bars").innerHTML=labels.map((l,i)=>`<div class="bar"><span>${l}</span><div><i id="bar${i}"></i></div></div>`).join("");
+    }
+    const labels=recognizer.wordLabels();
+    await recognizer.listen(res=>{
+      const sc=res.scores;
+      labels.forEach((l,i)=>{const b=$("bar"+i);if(b)b.style.width=Math.round(sc[i]*100)+"%";});
+      let k=0; sc.forEach((s,i)=>{if(s>sc[k])k=i;});
+      const id=VOICE_MAP[labels[k]], now=Date.now();
+      if(id&&sc[k]>=THRESHOLD&&!(lastHit.id===id&&now-lastHit.t<2000)){
+        lastHit={id,t:now}; state.cmd=id; update();
+        $("vstat").textContent="認識：「"+labels[k]+"」（"+Math.round(sc[k]*100)+"%）";
+      }
+    },{probabilityThreshold:0,overlapFactor:0.5,invokeCallbackOnNoiseAndUnknown:true});
+    listening=true; $("micToggle").textContent="⏹ 聞き取り停止";
+    st.textContent="聞き取り中… 命令を話してください。";
+  }catch(e){
+    st.textContent="マイクを開始できません："+(e.message||e)+"（ブラウザのマイク許可を確認。file://で駄目な場合は localhost 経由で開いてください）";
+  }
+}
+function stopListen(){
+  if(recognizer&&listening)recognizer.stopListening();
+  listening=false; $("micToggle").textContent="🎤 聞き取り開始"; $("vstat").textContent="停止中";
+}
+$("m-btn").onclick=()=>setInputMode(false);
+$("m-voice").onclick=()=>setInputMode(true);
+$("micToggle").onclick=()=>listening?stopListen():startListen();
+
+// ===== ゴール判定（カメラ：Teachable Machine 画像モデル） =====
+const GOAL_MODEL="https://teachablemachine.withgoogle.com/models/jSvvQuH7_/";
+const GOAL_MAP={"服":"fold","鉛筆":"pencil","消しゴム":"eraser","宿題":"homework"}; // 「つくえ」「人」は使わない
+const GOAL_TH=0.8;
+let goalModel=null, gStream=null;
+
+function setGoalMode(cam){
+  state.goalMode=cam?"cam":"sim";
+  $("g-sim").classList.toggle("on",!cam); $("g-cam").classList.toggle("on",cam);
+  $("camPanel").classList.toggle("hidden",!cam);
+  if(!cam)stopGoalCam();
+  update();
+}
+function stopGoalCam(){
+  if(gStream){gStream.getTracks().forEach(t=>t.stop());gStream=null;}
+  $("gcam").srcObject=null;
+  ["gcam","gcamSel","gpick"].forEach(i=>$(i).classList.add("hidden"));
+  $("gcamBtn").classList.remove("hidden"); $("gstat").textContent="";
+}
+async function startGoalCam(deviceId){
+  if(gStream)gStream.getTracks().forEach(t=>t.stop());
+  gStream=await navigator.mediaDevices.getUserMedia({video:deviceId?{deviceId:{exact:deviceId}}:true});
+  $("gcam").srcObject=gStream;
+}
+$("g-sim").onclick=()=>setGoalMode(false);
+$("g-cam").onclick=()=>setGoalMode(true);
+$("gcamBtn").onclick=async()=>{
+  const st=$("gstat");
+  if(!navigator.mediaDevices||!window.isSecureContext){
+    st.innerHTML="このページはカメラを使えない開き方です（"+location.protocol+"）。<b>起動.bat</b> から http://localhost:8000/idou.html を開いてください。";return;
+  }
+  try{
+    st.textContent="カメラを準備中…（許可を求められたら「許可」）";
+    await startGoalCam();
+    const devs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==="videoinput");
+    const cur=gStream.getVideoTracks()[0].getSettings().deviceId;
+    $("gcamSel").innerHTML=devs.map((d,i)=>`<option value="${d.deviceId}" ${d.deviceId===cur?"selected":""}>${d.label||("カメラ"+(i+1))}</option>`).join("");
+    ["gcam","gcamSel","gpick"].forEach(i=>$(i).classList.remove("hidden")); $("gcamBtn").classList.add("hidden");
+    st.textContent="モデルを読み込み中…";
+    if(typeof tmImage==="undefined")throw new Error("判定ライブラリを読み込めません（ネット接続を確認）");
+    if(!goalModel)goalModel=await tmImage.load(GOAL_MODEL+"model.json",GOAL_MODEL+"metadata.json");
+    st.textContent="目標物を写して「選択」を押してください。";
+  }catch(e){
+    st.textContent="カメラを開始できません："+(e.name||"")+" "+(e.message||e)+"（ブラウザのカメラ許可を確認）";
+  }
+};
+$("gcamSel").onchange=async e=>{try{await startGoalCam(e.target.value);}catch(err){$("gstat").textContent="切替失敗："+err.message;}};
+$("gpick").onclick=async()=>{
+  const st=$("gstat"), v=$("gcam"), c=COMMANDS.find(c=>c.id===state.cmd);
+  if(!c){st.textContent="先に動作の命令を選んでください。";return;}
+  if(!goalModel||!v.videoWidth){st.textContent="カメラ・モデルの準備ができていません。";return;}
+  const cv=document.createElement("canvas"); cv.width=v.videoWidth; cv.height=v.videoHeight;
+  cv.getContext("2d").drawImage(v,0,0);               // 押した瞬間のフレーム
+  const pred=await goalModel.predict(cv);
+  $("gbars").innerHTML=pred.map(p=>`<div class="bar"><span>${p.className}</span><div><i style="width:${Math.round(p.probability*100)}%"></i></div></div>`).join("");
+  const used=pred.filter(p=>GOAL_MAP[p.className]);   // つくえ・人は除外
+  const top=used.slice().sort((a,b)=>b.probability-a.probability)[0];
+  const best=pred.slice().sort((a,b)=>b.probability-a.probability)[0];
+  if(best===top&&top.probability>=GOAL_TH&&GOAL_MAP[top.className]===c.id){
+    state.goal={cmd:c.id,pos:state.pos.join(),stand:c.stand.join()};
+    st.textContent=`判定：${top.className}（${Math.round(top.probability*100)}%）→ ゴール！`;
+    update();
+    if(c.id==="homework")openMarker();
+  }else{
+    st.textContent=`判定：${best.className}（${Math.round(best.probability*100)}%）→ 「${c.label}」のゴールではありません。`;
+  }
+};
+
 update();
 </script>
 </body>
